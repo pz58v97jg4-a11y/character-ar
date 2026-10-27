@@ -16,6 +16,7 @@ button,.save{min-height:48px;border:1px solid #c5d4ca;border-radius:14px;backgro
 button.primary{background:#226b53;color:white;border-color:#226b53}button:disabled{opacity:.45;cursor:default}button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #b27a19;outline-offset:3px}
 .status{padding:12px;background:#e6eee7;border-radius:12px;font-size:14px;overflow-wrap:anywhere}.error{color:#8b2828;background:#fff0eb}.note{font-size:13px;color:#50675d}
 details{margin-top:24px;border-top:1px solid #d5dfd5;padding-top:18px}summary{font-weight:700;cursor:pointer;min-height:44px}label{display:block;margin-top:12px}input{width:100%;min-width:0;padding:12px;border:1px solid #b6c9bc;border-radius:10px;font:inherit;font-size:16px}#qrImage{display:block;max-width:100%;width:300px;height:auto;margin:16px auto;image-rendering:pixelated}#qrTarget{overflow-wrap:anywhere;font-size:13px}
+#photoResult{margin:16px 0;padding:16px;background:white;border:1px solid #d5dfd5;border-radius:18px}#photoResult h2{font-size:19px;margin:0 0 12px}#photoImage{display:block;width:100%;height:auto}#photoStatus{font-size:14px;overflow-wrap:anywhere}
 </style>
 <main>
   <div class="tag">CAMERA + CHARACTER</div>
@@ -28,9 +29,19 @@ details{margin-top:24px;border-top:1px solid #d5dfd5;padding-top:18px}summary{fo
   </div>
   <div class="row"><button id="start" class="primary">カメラを起動</button><button id="stop" disabled>カメラ停止</button></div>
   <div class="row"><button id="smaller" disabled>小さく</button><button id="larger" disabled>大きく</button><button id="reset" disabled>位置を戻す</button></div>
+  <div class="row"><button id="capture" class="primary" disabled>写真を撮る</button></div>
   <p id="status" class="status" role="status" aria-live="polite">カメラは停止中です。</p>
   <p id="imageError" class="status error" role="alert" hidden></p>
-  <p class="note">映像はこの端末で表示するだけ。録画・音声取得・外部送信は行いません。キャラクターは画面に重ねた2D画像です。</p>
+  <p class="note">写真はこの端末内で合成します。保存・共有は撮影後に選べます。録画・音声取得・自動送信は行いません。キャラクターは画面に重ねた2D画像です。</p>
+  <section id="photoResult" aria-labelledby="photoTitle" hidden>
+    <h2 id="photoTitle">撮影した写真</h2>
+    <img id="photoImage" alt="カメラ映像とキャラクターを合成した写真">
+    <div class="row"><a id="photoDownload" class="save" download="character-ar-photo.png">写真を保存</a><button id="photoShare" class="primary">保存・共有</button></div>
+    <p id="photoStatus" role="status" aria-live="polite"></p>
+    <p class="note">「保存・共有」から「画像を保存」を選ぶと写真アプリに保存できます（端末によって項目が異なります）。使えない場合は上の画像を長押しして保存してください。「写真を保存」はファイルとして保存します。</p>
+    <div class="row"><button id="photoDiscard">この写真を閉じる</button></div>
+    <p class="note">次の撮影やページの再読み込みで、このプレビューは置き換わります。残したい写真は先に保存してください。</p>
+  </section>
   <details>
     <summary>公開したページのQRコードを作る</summary>
     <p class="note">公開後、Safariで開けることを確認したHTTPSのURLを入力してください。URLの存在は自動確認しません。</p>
@@ -72,10 +83,11 @@ function layout() {
 }
 character.onload = () => {
   ready = true; character.hidden = false; $('imageError').hidden = true;
-  $('reset').disabled = false; layout();
+  $('reset').disabled = false; layout(); updateCapture();
 };
 character.onerror = () => {
   ready = false; character.hidden = true;
+  updateCapture();
   ['smaller','larger','reset'].forEach(id => $(id).disabled = true);
   $('imageError').hidden = false;
   $('imageError').textContent = '画像を読み込めません。index.htmlと同じ場所に、背景透過PNGを character.png という名前で置いてください。大文字・小文字も確認してください。';
@@ -104,6 +116,7 @@ function stopCamera(message = 'カメラを停止しました。再び起動で�
   if (stream) stream.getTracks().forEach(track => track.stop());
   stream=null; video.pause(); video.srcObject=null;
   $('start').disabled=false; $('stop').disabled=true; $('hint').hidden=false;
+  updateCapture();
   status(message);
 }
 const errors = {
@@ -130,7 +143,7 @@ $('start').onclick = async () => {
     }));
     await video.play();
     if (token !== generation) return;
-    $('hint').hidden=true; status('カメラ起動中です。キャラクターを指で動かせます。');
+    $('hint').hidden=true; updateCapture(); status('カメラ起動中です。位置を調整し、「写真を撮る」を押してください。');
   } catch (error) {
     if (token !== generation) return;
     stopCamera(); status(errors[error.name] || 'カメラを起動できません。Safariでページを開き直してお試しください。',true);
@@ -139,6 +152,69 @@ $('start').onclick = async () => {
 $('stop').onclick=()=>stopCamera();
 document.addEventListener('visibilitychange',()=>{if(document.hidden) stopCamera('画面を離れたためカメラを停止しました。再度起動してください。');});
 window.addEventListener('pagehide',()=>stopCamera());
+// 写真はCanvasで端末内合成。画面のobject-fit:coverと同じ中央切り抜きを使う。
+let photoFile = null, sharingPhoto = false;
+function updateCapture() {
+  $('capture').disabled = !(stream && ready && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && !video.paused && !document.hidden);
+}
+['loadeddata','playing','pause','emptied','resize'].forEach(name => video.addEventListener(name, updateCapture));
+$('capture').onclick = () => {
+  updateCapture();
+  if ($('capture').disabled) { status('カメラとキャラクターの準備ができてから撮影してください。', true); return; }
+  try {
+    layout();
+    const w = stage.clientWidth, h = stage.clientHeight;
+    if (!w || !h) throw Error('表示エリアを確認できません。ページを開き直してください。');
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const cover = Math.max(w / vw, h / vh);
+    const sw = w / cover, sh = h / cover;
+    const canvas = document.createElement('canvas');
+    // 元映像の解像度を超えず、長辺1600px以内に抑えてメモリ使用量を制限する。
+    const factor = Math.min(1 / cover, 1600 / Math.max(w,h));
+    canvas.width = Math.max(1, Math.round(w * factor));
+    canvas.height = Math.max(1, Math.round(h * factor));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw Error('このブラウザでは写真を作成できません。Safariで開いてください。');
+    ctx.drawImage(video, (vw-sw)/2, (vh-sh)/2, sw, sh, 0, 0, canvas.width, canvas.height);
+    const fx = canvas.width/w, fy = canvas.height/h;
+    ctx.drawImage(character, parseFloat(character.style.left)*fx, parseFloat(character.style.top)*fy,
+      parseFloat(character.style.width)*fx, parseFloat(character.style.height)*fy);
+    const data = canvas.toDataURL('image/png');
+    if (!data.startsWith('data:image/png;base64,')) throw Error('写真の作成に失敗しました。もう一度撮影してください。');
+    const bytes = Uint8Array.from(atob(data.split(',')[1]), c=>c.charCodeAt(0));
+    const name = 'character-ar-' + new Date().toISOString().replace(/[:.]/g,'-') + '.png';
+    const file = new File([bytes], name, {type:'image/png'});
+    photoFile = file;
+    $('photoImage').src = data; $('photoDownload').href = data; $('photoDownload').download = name;
+    $('photoResult').hidden = false;
+    $('photoStatus').textContent = '撮影しました。まだ写真アプリには保存していません。「保存・共有」または画像の長押しで保存してください。';
+    status('撮影しました。下の「撮影した写真」から保存・共有できます。');
+  } catch (error) {
+    status(error.name === 'SecurityError' ? '画像の読み込み制限で撮影できません。character.pngをこのサイトと同じ場所に置いてください。' : '撮影できませんでした。カメラを再起動してお試しください。', true);
+  }
+};
+$('photoShare').onclick = async () => {
+  if (!photoFile || sharingPhoto) return;
+  const file = photoFile;
+  sharingPhoto = true; $('photoShare').disabled = true;
+  try {
+    // 撮影時にFileを用意し、このボタンのタップ直後に共有画面を開く。
+    if (navigator.share && navigator.canShare?.({files:[file]})) {
+      await navigator.share({files:[file]});
+      if (photoFile === file) $('photoStatus').textContent = '共有画面の操作が終了しました。保存先・共有先で写真を確認してください。';
+    } else {
+      $('photoStatus').textContent = 'このブラウザでは画像共有を使えません。「写真を保存」または画像の長押しを使ってください。';
+    }
+  } catch (error) {
+    if (photoFile === file) $('photoStatus').textContent = error.name === 'AbortError' ? '共有をキャンセルしました。写真はここに残っています。' : '共有できませんでした。「写真を保存」または画像の長押しを使ってください。';
+  } finally { sharingPhoto = false; $('photoShare').disabled = false; }
+};
+$('photoDiscard').onclick = () => {
+  photoFile = null; $('photoResult').hidden = true;
+  $('photoImage').removeAttribute('src'); $('photoDownload').removeAttribute('href');
+  $('photoStatus').textContent = '';
+  status('写真のプレビューを閉じました。すでに保存・共有した画像は削除されません。');
+};
 let qrFile=null;
 function clearQR(){ $('qrResult').hidden=true; qrFile=null; $('qrImage').removeAttribute('src'); $('download').removeAttribute('href'); }
 $('url').addEventListener('input',()=>{clearQR(); $('qrStatus').textContent='';});
